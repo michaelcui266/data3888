@@ -1,0 +1,435 @@
+---
+title: 'report2'
+author: "Yutong Cui SID 480025164"
+date: "02/05/2020"
+output: html_document
+---
+
+
+```{r}
+library(GEOquery) 
+library(R.utils)
+library(reshape2)
+library(ggplot2)
+library(limma)
+library(dplyr)
+```
+```{r}
+library(ggplot2)
+```
+```{r}
+if (!requireNamespace("BiocManager", quietly=TRUE))
+    install.packages("BiocManager")
+BiocManager::install("GEOquery")
+```
+
+
+```{r}
+datadir = "/Users/yutongcui/Downloads/GSE120396_RAW/"
+
+# Read in the files
+fileNames <- list.files(datadir)
+
+# Check that we have read in the correct files
+print(fileNames[1:5])
+```
+
+
+
+```{r}
+gse = c()
+for(i in 1:length(fileNames)){
+  temptable <- read.delim(file.path(datadir, fileNames[i]), header=TRUE)
+  gse <- cbind(gse, temptable[,2])
+  colnames(gse)[i] <- colnames(temptable)[2]
+}
+
+rownames(gse) = read.delim(file.path(datadir, fileNames[1]), header=TRUE)[,1]
+```
+```{r}
+dim(gse)
+print(rownames(gse[1:50, ]))
+summary(gse[,1])
+```
+```{r}
+print(rownames(gse[1:50, ]))
+```
+```{r}
+summary(gse[,1])
+```
+```{r}
+library(GEOquery)
+```
+
+```{r}
+clinical_outcome <-getGEO("GSE120396")
+clinical_outcome<- clinical_outcome$GSE120396_series_matrix.txt.gz
+
+print(clinical_outcome$characteristics_ch1.1[1:10])
+```
+```{r}
+rejection_status  <- clinical_outcome$characteristics_ch1.1
+rejection_status <- unlist(lapply( strsplit(as.character(rejection_status), ": " ) , `[[` , 2)  )
+table(rejection_status)
+```
+
+
+```{r}
+boxplot(gse)
+p <- ggplot(melt(gse), aes(x=variable, y=value)) +  
+  geom_boxplot(outlier.colour="black", outlier.shape=16,
+             outlier.size=0.5, notch=FALSE) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs (x = "patient", y = "expression value") + theme_minimal()
+
+```
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("limma")
+```
+```{r}
+write.csv(gse, "GSE120396_expression_matrix1.csv")
+```
+
+```{r}
+# encode yes and no to 1 and 0 
+rejection_status_encode <- ifelse(rejection_status == "Yes", 1, 0 )
+
+groupname <- factor(rejection_status)
+design <- model.matrix(~ groupname + 0)
+
+fit <- lmFit(gse, design)
+cont.matrix <- makeContrasts(groupnameYes-groupnameNo, levels=design)
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2)
+tT <- topTable(fit2)
+round(tT[1:5,], 2)
+```
+```{r}
+library(limma)
+```
+
+```{r}
+cl <- factor(sample(c("YES", "NO"), 80, replace=TRUE))
+fakeX <- matrix(rnorm(10000*80), nrow=10000)
+
+design <- model.matrix(~ cl + 0 )
+fakefit <- lmFit(fakeX, design)
+cont.matrix <- makeContrasts(clYES - clNO, levels=design)
+fakefit2 <- contrasts.fit(fakefit, cont.matrix)
+fakefit2 <- eBayes(fakefit2)
+round(topTable(fakefit2), 2)
+
+```
+```{r}
+df<- topTable(fit2, number=nrow(fit2), genelist=rownames(gse))
+
+p <- ggplot(df, aes(x = AveExpr, y = logFC))+
+    geom_point(aes(colour=-log10(P.Value)), alpha=1/3, size=1) +
+    scale_colour_gradient(low="blue",high="red")+
+    ylab("log2 fold change") + xlab("Average expression")
+p
+```
+
+
+
+```{r}
+library(cvTools)
+library(magrittr) 
+library(dplyr) 
+library(e1071)
+library(randomForest)
+```
+
+
+```{r}
+largevar = apply(gse, 1, var)
+ind = which(largevar > quantile(largevar, 0.9))
+
+X = as.matrix(t(gse[ind,]))
+y = rejection_status
+
+cvK = 5 
+cv_50acc5_knn = cv_50acc5_svm = cv_50acc5_rf = c()
+cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+
+n_sim = 25
+for (i in 1:n_sim) {
+
+  cvSets = cvTools::cvFolds(nrow(X), cvK)  
+  cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+  
+  for (j in 1:cvK) {
+    test_id = cvSets$subsets[cvSets$which == j]
+    X_test = X[test_id, ]
+    X_train = X[-test_id, ]
+    y_test = y[test_id]
+    y_train = y[-test_id]
+    
+  
+    fit5 = class::knn(train = X_train, test = X_test, cl = y_train, k = 5)
+    cv_acc_knn[j] = table(fit5, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+    
+    
+    svm_res <- e1071::svm(x = X_train, y = as.factor(y_train))
+    fit <- predict(svm_res, X_test)
+    cv_acc_svm[j] = table(fit, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+
+    rf_res <- randomForest::randomForest(x = X_train, y = as.factor(y_train))
+    fit <- predict(rf_res, X_test)
+    cv_acc_rf[j] = table(fit, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+  }
+  cv_50acc5_knn <- append(cv_50acc5_knn, mean(cv_acc_knn))
+  cv_50acc5_svm <- append(cv_50acc5_svm, mean(cv_acc_svm))
+  cv_50acc5_rf <- append(cv_50acc5_rf, mean(cv_acc_rf))
+  cv_50acc5_knn_5 <- cv_50acc5_knn
+  cv_50acc5_svm_5 <-cv_50acc5_svm
+  cv_50acc5_rf_5 <-cv_50acc5_rf
+  
+} 
+```
+```{r}
+boxplot(list(SVM = cv_50acc5_svm, KNN = cv_50acc5_knn , RF= cv_50acc5_rf ))
+```
+```{r}
+largevar = apply(gse, 1, var)
+ind = which(largevar > quantile(largevar, 0.9))
+
+X = as.matrix(t(gse[ind,]))
+y = rejection_status
+
+cvK = 3
+cv_50acc5_knn = cv_50acc5_svm = cv_50acc5_rf = c()
+cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+
+n_sim = 25
+for (i in 1:n_sim) {
+
+  cvSets = cvTools::cvFolds(nrow(X), cvK)  
+  cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+  
+  for (j in 1:cvK) {
+    test_id = cvSets$subsets[cvSets$which == j]
+    X_test = X[test_id, ]
+    X_train = X[-test_id, ]
+    y_test = y[test_id]
+    y_train = y[-test_id]
+    
+  
+    fit5 = class::knn(train = X_train, test = X_test, cl = y_train, k = 5)
+    cv_acc_knn[j] = table(fit5, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+    
+    
+    svm_res <- e1071::svm(x = X_train, y = as.factor(y_train))
+    fit <- predict(svm_res, X_test)
+    cv_acc_svm[j] = table(fit, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+
+    rf_res <- randomForest::randomForest(x = X_train, y = as.factor(y_train))
+    fit <- predict(rf_res, X_test)
+    cv_acc_rf[j] = table(fit, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+  }
+  cv_50acc5_knn <- append(cv_50acc5_knn, mean(cv_acc_knn))
+  cv_50acc5_svm <- append(cv_50acc5_svm, mean(cv_acc_svm))
+  cv_50acc5_rf <- append(cv_50acc5_rf, mean(cv_acc_rf))
+  cv_50acc5_knn_3 <- cv_50acc5_knn
+  cv_50acc5_svm_3 <-cv_50acc5_svm
+  cv_50acc5_rf_3 <-cv_50acc5_rf
+} 
+boxplot(list(SVM = cv_50acc5_svm, KNN = cv_50acc5_knn , RF= cv_50acc5_rf ))
+```
+```{r}
+largevar = apply(gse, 1, var)
+ind = which(largevar > quantile(largevar, 0.9))
+
+X = as.matrix(t(gse[ind,]))
+y = rejection_status
+
+cvK = 4
+cv_50acc5_knn = cv_50acc5_svm = cv_50acc5_rf = c()
+cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+
+n_sim = 25
+for (i in 1:n_sim) {
+
+  cvSets = cvTools::cvFolds(nrow(X), cvK)  
+  cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+  
+  for (j in 1:cvK) {
+    test_id = cvSets$subsets[cvSets$which == j]
+    X_test = X[test_id, ]
+    X_train = X[-test_id, ]
+    y_test = y[test_id]
+    y_train = y[-test_id]
+    
+  
+    fit5 = class::knn(train = X_train, test = X_test, cl = y_train, k = 5)
+    cv_acc_knn[j] = table(fit5, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+    
+    
+    svm_res <- e1071::svm(x = X_train, y = as.factor(y_train))
+    fit <- predict(svm_res, X_test)
+    cv_acc_svm[j] = table(fit, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+
+    rf_res <- randomForest::randomForest(x = X_train, y = as.factor(y_train))
+    fit <- predict(rf_res, X_test)
+    cv_acc_rf[j] = table(fit, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+  }
+  cv_50acc5_knn <- append(cv_50acc5_knn, mean(cv_acc_knn))
+  cv_50acc5_svm <- append(cv_50acc5_svm, mean(cv_acc_svm))
+  cv_50acc5_rf <- append(cv_50acc5_rf, mean(cv_acc_rf))
+  cv_50acc5_knn_4 <- cv_50acc5_knn
+  cv_50acc5_svm_4 <-cv_50acc5_svm
+  cv_50acc5_rf_4 <-cv_50acc5_rf
+} 
+boxplot(list(SVM = cv_50acc5_svm, KNN = cv_50acc5_knn , RF= cv_50acc5_rf ))
+```
+```{r}
+largevar = apply(gse, 1, var)
+ind = which(largevar > quantile(largevar, 0.9))
+
+X = as.matrix(t(gse[ind,]))
+y = rejection_status
+
+cvK = 2
+cv_50acc5_knn = cv_50acc5_svm = cv_50acc5_rf = c()
+cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+
+n_sim = 25
+for (i in 1:n_sim) {
+
+  cvSets = cvTools::cvFolds(nrow(X), cvK)  
+  cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+  
+  for (j in 1:cvK) {
+    test_id = cvSets$subsets[cvSets$which == j]
+    X_test = X[test_id, ]
+    X_train = X[-test_id, ]
+    y_test = y[test_id]
+    y_train = y[-test_id]
+    
+  
+    fit5 = class::knn(train = X_train, test = X_test, cl = y_train, k = 5)
+    cv_acc_knn[j] = table(fit5, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+    
+    
+    svm_res <- e1071::svm(x = X_train, y = as.factor(y_train))
+    fit <- predict(svm_res, X_test)
+    cv_acc_svm[j] = table(fit, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+
+    rf_res <- randomForest::randomForest(x = X_train, y = as.factor(y_train))
+    fit <- predict(rf_res, X_test)
+    cv_acc_rf[j] = table(fit, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+  }
+  cv_50acc5_knn <- append(cv_50acc5_knn, mean(cv_acc_knn))
+  cv_50acc5_svm <- append(cv_50acc5_svm, mean(cv_acc_svm))
+  cv_50acc5_rf <- append(cv_50acc5_rf, mean(cv_acc_rf))
+  cv_50acc5_knn_2 <- cv_50acc5_knn
+  cv_50acc5_svm_2 <-cv_50acc5_svm
+  cv_50acc5_rf_2 <-cv_50acc5_rf
+} 
+boxplot(list(SVM = cv_50acc5_svm, KNN = cv_50acc5_knn , RF= cv_50acc5_rf ))
+```
+```{r}
+largevar = apply(gse, 1, var)
+ind = which(largevar > quantile(largevar, 0.9))
+
+X = as.matrix(t(gse[ind,]))
+y = rejection_status
+
+cvK = 6
+cv_50acc5_knn = cv_50acc5_svm = cv_50acc5_rf = c()
+cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+
+n_sim = 25
+for (i in 1:n_sim) {
+
+  cvSets = cvTools::cvFolds(nrow(X), cvK)  
+  cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+  
+  for (j in 1:cvK) {
+    test_id = cvSets$subsets[cvSets$which == j]
+    X_test = X[test_id, ]
+    X_train = X[-test_id, ]
+    y_test = y[test_id]
+    y_train = y[-test_id]
+    
+  
+    fit5 = class::knn(train = X_train, test = X_test, cl = y_train, k = 5)
+    cv_acc_knn[j] = table(fit5, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+    
+    
+    svm_res <- e1071::svm(x = X_train, y = as.factor(y_train))
+    fit <- predict(svm_res, X_test)
+    cv_acc_svm[j] = table(fit, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+
+    rf_res <- randomForest::randomForest(x = X_train, y = as.factor(y_train))
+    fit <- predict(rf_res, X_test)
+    cv_acc_rf[j] = table(fit, y_test) %>% diag %>% sum %>% `/`(length(y_test))
+  }
+  cv_50acc5_knn <- append(cv_50acc5_knn, mean(cv_acc_knn))
+  cv_50acc5_svm <- append(cv_50acc5_svm, mean(cv_acc_svm))
+  cv_50acc5_rf <- append(cv_50acc5_rf, mean(cv_acc_rf))
+  cv_50acc5_knn_6 <- cv_50acc5_knn
+  cv_50acc5_svm_6 <-cv_50acc5_svm
+  cv_50acc5_rf_6 <-cv_50acc5_rf
+} 
+boxplot(list(SVM = cv_50acc5_svm, KNN = cv_50acc5_knn , RF= cv_50acc5_rf ))
+```
+** summary
+I was using the data from Gene Expression Omnibus database, which gives a lot of kinds of data. And choose the data GSE120396_RAW.tar to analyze. This data is telling the peripheral blood gene expression signature diagnoses subclinical acute rejection. And I through it to show the patient is stable or rejection and make some predictions like accuracy to shows the situation and the relationship between the number of histological abnormalities and the gene sequence.
+
+In the beginning, i install all the packages that I need then use the code between line 64 to 73 to make the data specific which means find the columns which contain the patient outcome. After that,  do some preprocessing to make the data readable due to that the original data is 88 files, so it needs to be a data frame. As the data frame created, then we can analyze what we want. Before we analyze the data, we also need the ggplot to do a quick check of the data to understand what kind of graph do we need to.
+
+
+
+Also, for my prediction model, I use three different methods to predict the patient rejection status from gene expression data. Each method is called the Random Forest, k-nearest neighbor, and the support vector machine to make the comparison. The definition of SVM is "constructs a hyperplane or set of hyperplanes in a high- or infinite-dimensional space, which can be used for classification, regression, or other tasks like outliers detection".  Also, for the knn, it's core mind is "If most of the k nearest samples in a feature space of a sample belong to a certain category, the sample also belongs to this category and has the characteristics of the sample in this category." Then is the random forest it is based on the decision tree, which can be explained as the "collection of decision trees and classify a new object based on attributes, each tree gives a classification, and we say the tree "votes" for that class then choose the most votes."
+
+Moreover i also create a shiny app to control the different cv folders which can give a more clear vision to see what happened. It is to do "subsequent confirmation and verification of this analysis in order to adjust the parameters of the model to make the model reflect the characteristics of the training set as much as possible" And for my apps i set 5 different cv folders 
+which can clearly shows the change in accuarcy cahnge. However there has some shortness for each method like knn could not deal with high deminsion data,the random forest will cost more time. So i have with these to give a more reliable graph.http://127.0.0.1:3058
+
+After that, I also create another shiny app that uses the boxplot to show the relationship between the number of histological abnormalities and the gene sequence. Then the website is http://127.0.0.1:7156.
+Also, there has some potential shortness too. We can see there are some outliers that probably is some human error like the confusion data when they are trying to record, and the solution is to do several times and take care of the data. Also, it could the original data have some problems due to that we do not fully understand the gene. The solution way is to use the time to make people understand more about the gene.
+**
+
+
+
+```{r}
+#b = read.csv("/Users/yutongcui/Downloads/)
+data=read.csv('/Users/yutongcui/Downloads/GSE120396_expression_matrix1.csv',row.names = 1)
+```
+```{r}
+tdata <- data.frame(t(data))
+
+data$X
+data["1-Mar",]
+pairs(~X2.Mar+X1.Mar+A1BG, data=tdata)   
+
+choices = data.frame(
+  var = names(tdata),
+  num = 1:length(names(tdata))
+)
+mylist <- as.list(choices$num)
+names(mylist) <- choices$var
+
+```
+
+
+```{r}
+library(shiny)
+```
+
+**Reference:
+Shiny—Welcome to Shiny. (n.d.). Retrieved 9 May 2020, from https://shiny.rstudio.com/tutorial/written-tutorial/lesson1/
+Commonly Used Machine Learning Algorithms | Data Science. (n.d.). Retrieved 9 May 2020, from https://www.analyticsvidhya.com/blog/2017/09/common-machine-learning-algorithms/
+
+How does Shiny work? (n.d.). RStudio Support. Retrieved 9 May 2020, from http://support.rstudio.com/hc/en-us/articles/218294767
+
+随机森林_百度百科. (n.d.). Retrieved 9 May 2020, from https://baike.baidu.com/item/%E9%9A%8F%E6%9C%BA%E6%A3%AE%E6%9E%97?fromtitle=Random+forest&fromid=18081353
+Cross-validation (statistics). (2020). In Wikipedia. https://en.wikipedia.org/w/index.php?title=Cross-validation_(statistics)&oldid=952753784
+**
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
